@@ -1,58 +1,124 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>Form</class>
- <widget class="QWidget" name="Form">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
   <property name="geometry">
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>600</width>
-    <height>400</height>
+    <width>800</width>
+    <height>600</height>
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Drag and Drop</string>
+   <string>Filework</string>
   </property>
-  <layout class="QVBoxLayout">
-   <item>
-    <widget class="QFrame" name="dropFrame">
-     <property name="minimumSize">
-      <size>
-       <width>0</width>
-       <height>200</height>
-      </size>
-     </property>
-     <property name="frameShape">
-      <enum>QFrame::Shape::Box</enum>
-     </property>
-     <property name="frameShadow">
-      <enum>QFrame::Shadow::Raised</enum>
-     </property>
-     <layout class="QVBoxLayout">
-      <item>
-       <widget class="QLabel" name="label">
-        <property name="text">
-         <string>Перетащите файлы сюда</string>
-        </property>
-        <property name="alignment">
-         <set>Qt::AlignmentFlag::AlignCenter</set>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QListWidget" name="fileListWidget"/>
-      </item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QTextEdit" name="contentTextEdit">
-     <property name="acceptDrops">
-      <bool>false</bool>
-     </property>
-    </widget>
-   </item>
-  </layout>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="verticalLayoutMain">
+    <item>
+     <widget class="QSplitter" name="splitter">
+      <property name="orientation">
+       <enum>Qt::Orientation::Horizontal</enum>
+      </property>
+      <widget class="QFrame" name="leftDropZone">
+       <property name="acceptDrops">
+        <bool>true</bool>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::Box</enum>
+       </property>
+       <property name="frameShadow">
+        <enum>QFrame::Shadow::Raised</enum>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayoutLeft">
+        <item>
+         <widget class="QLabel" name="leftLabel">
+          <property name="text">
+           <string>Перетащите файлы сюда</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QTextEdit" name="leftContentEdit">
+          <property name="acceptDrops">
+           <bool>false</bool>
+          </property>
+          <property name="placeholderText">
+           <string>Содержимое выбранного файла...</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+      <widget class="QFrame" name="rightDropZone">
+       <property name="acceptDrops">
+        <bool>true</bool>
+       </property>
+       <property name="frameShape">
+        <enum>QFrame::Shape::Box</enum>
+       </property>
+       <property name="frameShadow">
+        <enum>QFrame::Shadow::Raised</enum>
+       </property>
+       <layout class="QVBoxLayout" name="verticalLayoutRight">
+        <item>
+         <widget class="QLabel" name="rightLabel">
+          <property name="text">
+           <string>Перетащите шаблоны сюда</string>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QTextEdit" name="rightContentEdit">
+          <property name="acceptDrops">
+           <bool>false</bool>
+          </property>
+          <property name="placeholderText">
+           <string>Содержимое выбранного шаблона...</string>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>800</width>
+     <height>22</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="Files">
+    <property name="title">
+     <string>файлы</string>
+    </property>
+   </widget>
+   <widget class="QMenu" name="Templates">
+    <property name="title">
+     <string>шаблоны</string>
+    </property>
+   </widget>
+   <widget class="QMenu" name="Fill_up">
+    <property name="title">
+     <string>заполнить</string>
+    </property>
+   </widget>
+   <addaction name="Files"/>
+   <addaction name="Templates"/>
+   <addaction name="Fill_up"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
  </widget>
  <resources/>
  <connections/>
