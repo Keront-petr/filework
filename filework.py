@@ -17,8 +17,8 @@ class DragnDrop(QObject):
         self.window = window
         self.files_folder = Path("input_files")
         self.templates_folder = Path("templates")
-        self.file_action = None
-        self.template_action = None
+        self.current_file_path = None
+        self.current_template_path = None
         self.setup()
 
     def setup(self):
@@ -61,25 +61,19 @@ class DragnDrop(QObject):
             for url in event.mimeData().urls():
                 source = Path(url.toLocalFile())
                 if source.is_file():
-                    dest = self.files_folder / source.name
-                    shutil.copy2(source, dest)
+                    dest = self.copy_file_to_folder(source, self.files_folder)
+                    self.current_file_path = dest
                     self.show_content_in_edit(dest, self.window.leftContentEdit)
             self.window.statusbar.showMessage("Файлы добавлены в input_files", 2000)
         event.acceptProposedAction()
-
-    def drag_enter_templates(self, event):
-        if event.mimeData().hasUrls():
-            event.acceptProposedAction()
-        else:
-            event.ignore()
 
     def drop_templates(self, event):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
                 source = Path(url.toLocalFile())
                 if source.is_file():
-                    dest = self.templates_folder / source.name
-                    shutil.copy2(source, dest)
+                    dest = self.copy_file_to_folder(source, self.templates_folder)
+                    self.current_template_path = dest
                     self.show_content_in_edit(dest, self.window.rightContentEdit)
             self.window.statusbar.showMessage("Шаблоны добавлены в templates", 2000)
         event.acceptProposedAction()
@@ -138,6 +132,7 @@ class DragnDrop(QObject):
         )
         if file_path:
             dest_path = self.copy_file_to_folder(Path(file_path), self.files_folder)
+            self.current_file_path = dest_path
             self.show_content_in_edit(dest_path, self.window.leftContentEdit)
             self.window.statusbar.showMessage(f"Файл скопирован в {self.files_folder}", 2000)
 
@@ -150,6 +145,7 @@ class DragnDrop(QObject):
         )
         if file_path:
             dest_path = self.copy_file_to_folder(Path(file_path), self.templates_folder)
+            self.current_template_path = dest_path
             self.show_content_in_edit(dest_path, self.window.rightContentEdit)
             self.window.statusbar.showMessage(f"Шаблон скопирован в {self.templates_folder}", 2000)
 
@@ -159,6 +155,7 @@ class FillWindowTemplate(QMainWindow):
         self.path = path
         self.markers = []
         self.variant_widgets = []
+        self.generated_text = ""
         self.setWindowTitle(f"Заполнение шаблона: {path.name}")
         self.resize(1000, 700)
         self.setup_ui()
@@ -170,6 +167,7 @@ class FillWindowTemplate(QMainWindow):
         layout = QVBoxLayout(central)
 
         btn_layout = QHBoxLayout()
+        self.generate_btn = QPushButton("Сгенерировать")
         self.save_btn = QPushButton("Сохранить как")
         btn_layout.addWidget(self.generate_btn)
         btn_layout.addWidget(self.save_btn)
@@ -301,7 +299,6 @@ class FillWindowTemplate(QMainWindow):
         if not self.markers:
             QMessageBox.information(self, "Информация", "Маркеры не найдены")
             return
-
         selected_values = [cb.currentText() for cb in self.variant_widgets]
         new_text = self.raw_text
         for idx, marker in enumerate(reversed(self.markers)):
@@ -309,6 +306,7 @@ class FillWindowTemplate(QMainWindow):
             if value == "(пусто)":
                 value = ""
             new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
+        self.generated_text = new_text
         result_window = QTextEdit()
         result_window.setWindowTitle("Результат заполнения")
         result_window.setPlainText(new_text)
@@ -316,57 +314,78 @@ class FillWindowTemplate(QMainWindow):
         result_window.show()
 
     def save_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Сохранить шаблон как...", str(self.path),
-                                              "Все файлы (*.*)")
-        if path:
-            shutil.copy2(self.path, path)
-            QMessageBox.information(self, "Сохранено", f"Шаблон сохранён как {path}")
+        if not self.generated_text:
+            QMessageBox.warning(self, "Предупреждение", "Сначала сгенерируйте документ!")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить результат как...",
+            str(self.path.parent / f"{self.path.stem}_filled{self.path.suffix}"),
+            "Текстовые файлы (*.txt);;Все файлы (*.*)"
+        )
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(self.generated_text)
+                QMessageBox.information(self, "Сохранено", f"Результат сохранён в {file_path}")
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить: {e}")
 
 class FillWindowFile(QMainWindow):
-    def __init__(self, path, parent=None):
+    def __init__(self, file_path, template_path, parent=None):
         super().__init__(parent)
-        self.path = path
-        self.markers = []
-        self.variant_widgets = []
-        self.setWindowTitle(f"Выбор данных из: {path.name}")
+        self.file_path = file_path
+        self.template_path = template_path
+        self.setWindowTitle(f"Просмотр данных: {file_path.name}")
         self.resize(1000, 700)
         self.setup_ui()
-        self.load_template()
+        self.load_file()
+
     def setup_ui(self):
         central = QWidget()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
         btn_layout = QHBoxLayout()
-        self.save_btn = QPushButton("Сохранить как")
-        btn_layout.addWidget(self.generate_btn)
-        btn_layout.addWidget(self.save_btn)
+        self.save_as_btn = QPushButton("Сохранить как")
+        btn_layout.addWidget(self.save_as_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
-        self.stacked_widget = QWidget() 
+        self.stacked_widget = QWidget()
         self.stacked_layout = QVBoxLayout(self.stacked_widget)
         layout.addWidget(self.stacked_widget)
 
-        self.save_btn.clicked.connect(self.save_file)
         self.save_as_btn.clicked.connect(self.save_as)
 
-        def load_file(self):
-            suffix = self.file_path.suffix.lower()
-            if suffix in ['.xlsx', '.xls']:
-                self.load_excel()
-            elif suffix == '.csv':
-                self.load_csv()
-            else:
-                self.load_text()
+    def clear_stacked(self):
+        while self.stacked_layout.count():
+            child = self.stacked_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
 
-        def load_excel(self):
-            try:
-                self.dataframe = pandas.read_excel(self.file_path,
+    def load_file(self):
+        suffix = self.file_path.suffix.lower()
+        if suffix in ['.xlsx', '.xls']:
+            self.load_excel()
+        elif suffix == '.csv':
+            self.load_csv()
+        else:
+            self.load_text()
+
+    def load_excel(self):
+        try:
+            self.dataframe = pandas.read_excel(self.file_path,
                                                engine='openpyxl' if self.file_path.suffix == '.xlsx' else 'xlrd')
-                self.display_dataframe()
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить Excel:\n{e}")
+            self.display_dataframe()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить Excel:\n{e}")
+
+    def load_csv(self):
+        try:
+            self.dataframe = pandas.read_csv(self.file_path)
+            self.display_dataframe()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить CSV:\n{e}")
 
     def display_dataframe(self):
         table = QTableWidget()
@@ -378,8 +397,7 @@ class FillWindowFile(QMainWindow):
                 value = self.dataframe.iat[i, j]
                 item = QTableWidgetItem(str(value) if not pandas.isna(value) else "")
                 table.setItem(i, j, item)
-        table.setEditTriggers(
-            QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
+        table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
         self.clear_stacked()
         self.stacked_layout.addWidget(table)
         self.table_widget = table
@@ -401,12 +419,31 @@ class FillWindowFile(QMainWindow):
         self.stacked_layout.addWidget(text_edit)
         self.text_edit = text_edit
 
+    def save_as(self):
+        QMessageBox.information(self, "Информация", "Сохранение данных пока не реализовано")
+
 def main():
     app = QApplication(sys.argv)
     ui_path = Path("filework.ui")
     window = QUiLoader().load(ui_path)
     window.show()
+
     dragdrop = DragnDrop(window)
+
+    def on_fill():
+        if dragdrop.current_template_path is None:
+            QMessageBox.warning(window, "Предупреждение", "Сначала загрузите шаблон!")
+            return
+        if dragdrop.current_file_path is None:
+            QMessageBox.warning(window, "Предупреждение", "Сначала загрузите файл данных!")
+            return
+        window.fill_file_window = FillWindowFile(
+            dragdrop.current_file_path,
+            dragdrop.current_template_path
+        )
+        window.fill_file_window.show()
+
+    window.Fill.triggered.connect(on_fill)
     sys.exit(app.exec())
 
 if __name__ == "__main__":
