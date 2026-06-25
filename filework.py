@@ -168,28 +168,39 @@ class FillWindowTemplate(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        btn_layout = QHBoxLayout()
+        top_layout = QHBoxLayout()
         self.example_btn = QPushButton("Пример")
         self.generate_btn = QPushButton("Сгенерировать")
-        btn_layout.addWidget(self.example_btn)
-        btn_layout.addWidget(self.generate_btn)
-        btn_layout.addStretch()
-        layout.addLayout(btn_layout)
+        top_layout.addWidget(self.example_btn)
+        top_layout.addWidget(self.generate_btn)
+
+        top_layout.addStretch()
+        top_layout.addWidget(QLabel("Имя файла:"))
+        self.file_name_combo = QComboBox()
+        self.file_name_combo.addItem("Имя шаблона")
+        top_layout.addWidget(self.file_name_combo)
+
+        layout.addLayout(top_layout)
 
         splitter = QSplitter(Qt.Horizontal)
         layout.addWidget(splitter)
 
         self.text_edit = QTextEdit()
-        self.text_edit.setReadOnly(True)
+        self.text_edit.setReadOnly(False)
+        self.text_edit.textChanged.connect(self.on_text_changed)
         splitter.addWidget(self.text_edit)
 
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.addWidget(QLabel("Маркеры и соответствующие колонки:"))
+        right_layout.addWidget(QLabel("Маркеры и теги:"))
         self.markers_list = QListWidget()
         right_layout.addWidget(self.markers_list)
-        splitter.addWidget(right_widget)
 
+        del_btn = QPushButton("Удалить маркер")
+        del_btn.clicked.connect(self.remove_marker)
+        right_layout.addWidget(del_btn)
+
+        splitter.addWidget(right_widget)
         splitter.setSizes([600, 300])
 
         self.example_btn.clicked.connect(self.show_example)
@@ -205,6 +216,7 @@ class FillWindowTemplate(QMainWindow):
             self.load_text()
         self.display_text_with_markers()
         self.populate_variants_panel()
+        self.update_file_name_options()
 
     def load_docx(self):
         doc = Document(self.path)
@@ -228,7 +240,7 @@ class FillWindowTemplate(QMainWindow):
 
     def find_markers_in_text(self, text):
         underscore_pattern = r'_{2,}'
-        index_pattern = r'<\d+>'
+        bracket_pattern = r'<([^>]+)>'
         colon_pattern = r'([A-Za-zА-Яа-я0-9_$]+)\s*:'
         markers = []
         for match in re.finditer(underscore_pattern, text):
@@ -241,21 +253,29 @@ class FillWindowTemplate(QMainWindow):
                 'text': match.group(),
                 'word': word
             })
-        for match in re.finditer(index_pattern, text):
+        for match in re.finditer(bracket_pattern, text):
             start, end = match.span()
-            word = self.find_word(text, start)
+            inner = match.group(1)
             markers.append({
-                'type': 'index',
+                'type': 'bracket',
                 'start': start,
                 'end': end,
                 'text': match.group(),
-                'word': word
+                'word': inner.strip()
             })
         existing_starts = {m['start'] for m in markers}
         existing_ends = {m['end'] for m in markers}
         for match in re.finditer(colon_pattern, text):
             start, end = match.span()
             word = match.group(1)
+            remainder = text[end:]
+            next_newline = remainder.find('\n')
+            rest_of_line = remainder[:next_newline] if next_newline != -1 else remainder
+            if rest_of_line:
+                if not re.match(r'^[ \t]*$', rest_of_line):
+                    continue
+            else:
+                pass
             overlapped = False
             for s, e in zip(existing_starts, existing_ends):
                 if not (end <= s or start >= e):
@@ -278,12 +298,26 @@ class FillWindowTemplate(QMainWindow):
         while i >= 0 and (text[i].isspace() or text[i] in '.,:;!?()[]{}-'):
             i -= 1
         end = i
-        while i >= 0 and (text[i].isalnum() or text[i] == '_' or text[i] == '$'):
+        while i >= 0 and (text[i].isalnum() or text[i] == '_'):
             i -= 1
         start = i + 1
         if start <= end:
-            return text[start:end+1]
+            return text[start:end + 1]
         return ""
+
+    def on_text_changed(self):
+        self.raw_text = self.text_edit.toPlainText()
+        self.find_markers_in_text(self.raw_text)
+        self.populate_variants_panel()
+        self.markers_list.repaint()
+
+    def remove_marker(self):
+        current_row = self.markers_list.currentRow()
+        if current_row < 0:
+            QMessageBox.information(self, "Информация", "Выберите маркер для удаления.")
+            return
+        del self.markers[current_row]
+        self.populate_variants_panel()
 
     def display_text_with_markers(self):
         self.text_edit.setPlainText(self.raw_text)
@@ -314,6 +348,13 @@ class FillWindowTemplate(QMainWindow):
             self.markers_list.setItemWidget(item, widget)
             self.variant_widgets.append(combo)
 
+    def update_file_name_options(self):
+        self.file_name_combo.clear()
+        self.file_name_combo.addItem("Имя шаблона")
+        if self.dataframe is not None:
+            for display_name in self.column_mapping.values():
+                self.file_name_combo.addItem(display_name)
+
     def _get_selected_columns(self):
         selected_display = [cb.currentText() for cb in self.variant_widgets]
         real_cols = []
@@ -342,11 +383,7 @@ class FillWindowTemplate(QMainWindow):
             for idx, marker in enumerate(reversed(self.markers)):
                 col = real_cols[len(self.markers) - 1 - idx]
                 value = str(row[col]) if col is not None and col in row and not pandas.isna(row[col]) else ""
-                if marker['type'] == 'colon':
-                    replacement = f"{marker['word']}: {value}"
-                    new_text = new_text[:marker['start']] + replacement + new_text[marker['end']:]
-                else:
-                    new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
+                new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
             self.generated_text = new_text
             return new_text
         else:
@@ -357,11 +394,7 @@ class FillWindowTemplate(QMainWindow):
                 for i, marker in enumerate(reversed(self.markers)):
                     col = real_cols[len(self.markers) - 1 - i]
                     value = str(row[col]) if col is not None and col in row and not pandas.isna(row[col]) else ""
-                    if marker['type'] == 'colon':
-                        replacement = f"{marker['word']}: {value}"
-                        new_text = new_text[:marker['start']] + replacement + new_text[marker['end']:]
-                    else:
-                        new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
+                    new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
                 results.append(new_text)
             return results
 
@@ -377,26 +410,45 @@ class FillWindowTemplate(QMainWindow):
         if self.dataframe is None or len(self.dataframe) == 0:
             QMessageBox.warning(self, "Ошибка", "Нет данных для генерации")
             return
-
         from PySide6.QtWidgets import QProgressDialog
         folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
         if not folder:
             return
         folder_path = Path(folder) / self.path.stem
         folder_path.mkdir(exist_ok=True)
-
         results = self.generate_filled_document(save_all=True)
         if not results:
             return
-
+        name_option = self.file_name_combo.currentText()
+        use_template_name = (name_option == "Имя шаблона")
+        col_for_name = None
+        if not use_template_name:
+            for real, display in self.column_mapping.items():
+                if display == name_option:
+                    col_for_name = real
+                    break
         progress = QProgressDialog("Генерация файлов...", "Отмена", 0, len(results), self)
         progress.setWindowModality(Qt.WindowModal)
         for i, text in enumerate(results):
             if progress.wasCanceled():
                 break
             progress.setValue(i)
-            filename = f"{self.path.stem}_{i + 1}.txt"
+            if use_template_name:
+                base_name = f"{self.path.stem}_{i+1}"
+            else:
+                row = self.dataframe.iloc[i]
+                val = row[col_for_name] if col_for_name in row and not pandas.isna(row[col_for_name]) else ""
+                base_name = str(val).strip()
+                if not base_name:
+                    base_name = f"{self.path.stem}_{i+1}"
+                base_name = re.sub(r'[\\/*?:"<>|]', "_", base_name)
+            filename = f"{base_name}.txt"
             filepath = folder_path / filename
+            counter = 1
+            while filepath.exists():
+                filename = f"{base_name}_{counter}.txt"
+                filepath = folder_path / filename
+                counter += 1
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(text)
         progress.setValue(len(results))
