@@ -338,6 +338,8 @@ class FillWindowFile(QMainWindow):
         self.dataframe = None
         self.column_mapping = {}  # исходное имя колонки -> новое имя (пользовательское)
         self.setWindowTitle(f"Выбор данных из: {file_path.name}")
+        self.table_widget = None
+        self._updating = False
         self.resize(1000, 700)
         self.setup_ui()
         self.load_file()
@@ -350,8 +352,10 @@ class FillWindowFile(QMainWindow):
         btn_layout = QHBoxLayout()
         self.accept_btn = QPushButton("Принять")
         self.add_index_btn = QPushButton("Добавить нумерацию")
+        self.add_row_btn = QPushButton("Добавить строку")
         btn_layout.addWidget(self.accept_btn)
         btn_layout.addWidget(self.add_index_btn)
+        btn_layout.addWidget(self.add_row_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -390,6 +394,7 @@ class FillWindowFile(QMainWindow):
         self.add_tag_btn.clicked.connect(self.add_tag)
         self.remove_tag_btn.clicked.connect(self.remove_tag)
         self.add_index_btn.clicked.connect(self.add_index_column)
+        self.add_row_btn.clicked.connect(self.add_row)
 
     def clear_stacked(self):
         while self.stacked_layout.count():
@@ -410,7 +415,7 @@ class FillWindowFile(QMainWindow):
         try:
             self.dataframe = pandas.read_excel(
                 self.file_path,
-                engine='openpyxl' if self.file_path.suffix == '.xlsx' else 'xlrd'
+                engine='openpyxl' if self.file_path.suffix == '.xlsx' else 'xlrd',dtype=str
             )
             self.column_mapping = {col: col for col in self.dataframe.columns}
             self.display_dataframe(self.dataframe)
@@ -420,7 +425,7 @@ class FillWindowFile(QMainWindow):
 
     def load_csv(self):
         try:
-            self.dataframe = pandas.read_csv(self.file_path)
+            self.dataframe = pandas.read_csv(self.file_path,dtype=str)
             self.column_mapping = {col: col for col in self.dataframe.columns}
             self.display_dataframe(self.dataframe)
             self.display_tags()
@@ -457,10 +462,136 @@ class FillWindowFile(QMainWindow):
                 value = df.iat[i, j]
                 item = QTableWidgetItem(str(value) if not pandas.isna(value) else "")
                 table.setItem(i, j, item)
-        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setEditTriggers(
+            QAbstractItemView.DoubleClicked |
+            QAbstractItemView.EditKeyPressed |
+            QAbstractItemView.AnyKeyPressed
+        )
+        table.installEventFilter(self)
+        table.itemChanged.connect(self.on_cell_changed)
+        self.table_widget = table
         self.clear_stacked()
         self.stacked_layout.addWidget(table)
         self.table_widget = table
+
+    def add_row(self):
+        if self.table_widget is None:
+            return
+        self.add_row_to_table()
+
+    def eventFilter(self, obj, event):
+        if obj == self.table_widget and event.type() == QEvent.KeyPress:
+            if event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_V:
+                self.paste_from_clipboard()
+                return True
+        return super().eventFilter(obj, event)
+
+    def update_dataframe_from_table(self):
+        for i in range(self.table_widget.rowCount()):
+            for j in range(self.table_widget.columnCount()):
+                item = self.table_widget.item(i, j)
+                if item is not None:
+                    val = item.text()
+                    self.dataframe.iat[i, j] = val
+
+    def _insert_data_parts(self, rows_data, start_row, start_col):
+        if self.table_widget is None:
+            return
+        self.table_widget.setUpdatesEnabled(False)
+        for i, row_parts in enumerate(rows_data):
+            target_row = start_row + i
+            while target_row >= self.table_widget.rowCount():
+                self.add_row_to_table()
+            for j, cell_text in enumerate(row_parts):
+                target_col = start_col + j
+                while target_col >= self.table_widget.columnCount():
+                    self.add_column_to_table()
+                item = self.table_widget.item(target_row, target_col)
+                if item is None:
+                    item = QTableWidgetItem()
+                    self.table_widget.setItem(target_row, target_col, item)
+                item.setText(cell_text)
+        self.update_dataframe_from_table()
+        self.table_widget.setUpdatesEnabled(True)
+
+    def paste_from_clipboard(self):
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+        if not text:
+            return
+        if '\n' not in text and '\r' not in text:
+            self.paste_single_cell(text)
+            return
+        lines = re.split(r'\r?\n', text)
+        rows_data = []
+        for line in lines:
+            sep = None
+            for s in ['\t', ',', ';', ' ']:
+                if s in line:
+                    sep = s
+                    break
+            if sep is None:
+                rows_data.append([line])
+            else:
+                if sep == ' ':
+                    parts = [p for p in line.split(' ') if p]
+                else:
+                    parts = line.split(sep)
+                rows_data.append(parts)
+        current_row = self.table_widget.currentRow()
+        current_col = self.table_widget.currentColumn()
+        if current_row < 0 or current_col < 0:
+            current_row = 0
+            current_col = 0
+        self._insert_data_parts(rows_data, current_row, current_col)
+
+    def paste_single_cell(self, text):
+        current_row = self.table_widget.currentRow()
+        current_col = self.table_widget.currentColumn()
+        if current_row < 0 or current_col < 0:
+            return
+        separators = ['\t', ',', ';', ' ']
+        delimiter = None
+        for sep in separators:
+            if sep in text:
+                delimiter = sep
+                break
+        if delimiter is not None:
+            if delimiter == ' ':
+                parts = [p for p in text.split(' ') if p]
+            else:
+                parts = text.split(delimiter)
+            rows_data = [[part.strip()] for part in parts]
+        else:
+            rows_data = [[text]]
+        self._insert_data_parts(rows_data, current_row, current_col)
+
+    def on_cell_changed(self, item):
+        if self._updating:
+            return
+        row = item.row()
+        col = item.column()
+        if row < len(self.dataframe) and col < len(self.dataframe.columns):
+            val = item.text()
+            if val == "":
+                val = pandas.NA
+            self.dataframe.iat[row, col] = val
+
+    def add_column_to_table(self):
+        self._updating = True
+        col_pos = self.table_widget.columnCount()
+        self.table_widget.insertColumn(col_pos)
+        base_name = "Новая колонка"
+        new_col_name = base_name
+        counter = 1
+        while new_col_name in self.dataframe.columns:
+            new_col_name = f"{base_name}_{counter}"
+            counter += 1
+        self.dataframe[new_col_name] = pandas.NA
+        self.column_mapping[new_col_name] = new_col_name
+        self.table_widget.setHorizontalHeaderLabels(self.dataframe.columns.astype(str))
+        self.display_tags()
+        self._updating = False
 
     def display_tags(self):
         self.tags_list.clear()
@@ -472,21 +603,34 @@ class FillWindowFile(QMainWindow):
                 self.tags_list.addItem(item)
         else:
             self.tags_list.addItem("(нет данных)")
+        self.display_dataframe(self.dataframe)
 
     def add_index_column(self):
         if self.dataframe is None:
             QMessageBox.warning(self, "Ошибка", "Нет загруженных данных.")
             return
+        self._updating = True
         base_name = "Нумерация"
         index_col_name = base_name
         counter = 1
         while index_col_name in self.dataframe.columns:
             index_col_name = f"{base_name}_{counter}"
             counter += 1
-        self.dataframe[index_col_name] = range(1, len(self.dataframe) + 1)
+        self.dataframe[index_col_name] = [str(i+1) for i in range(len(self.dataframe))]
         self.column_mapping[index_col_name] = index_col_name
         self.display_dataframe(self.dataframe)
         self.display_tags()
+        self._updating = False
+
+    def add_row_to_table(self):
+        self._updating = True
+        row_pos = self.table_widget.rowCount()
+        self.table_widget.insertRow(row_pos)
+        new_row = {col: pandas.NA for col in self.dataframe.columns}
+        self.dataframe = pandas.concat([self.dataframe, pandas.DataFrame([new_row])], ignore_index=True)
+        self.table_widget.scrollToItem(self.table_widget.item(row_pos, 0))
+        self.table_widget.selectRow(row_pos)
+        self._updating = False
 
     def on_tag_renamed(self, item):
         new_name = item.text().strip()
@@ -511,19 +655,10 @@ class FillWindowFile(QMainWindow):
         if self.dataframe is None:
             QMessageBox.warning(self, "Ошибка", "Нет загруженных данных.")
             return
-        base_name = "Новая колонка"
-        new_col_name = base_name
-        counter = 1
-        while new_col_name in self.dataframe.columns:
-            new_col_name = f"{base_name}_{counter}"
-            counter += 1
-        self.dataframe[new_col_name] = pandas.NA
-        self.column_mapping[new_col_name] = new_col_name
-        self.display_dataframe(self.dataframe)
-        self.display_tags()
+        self.add_column_to_table()
         for i in range(self.tags_list.count()):
             item = self.tags_list.item(i)
-            if item.data(Qt.UserRole) == new_col_name:
+            if i == self.tags_list.count() - 1:
                 self.tags_list.setCurrentItem(item)
                 self.tags_list.editItem(item)
                 break
@@ -534,10 +669,24 @@ class FillWindowFile(QMainWindow):
             QMessageBox.information(self, "Информация", "Выберите тег для удаления.")
             return
         item = self.tags_list.takeItem(current_row)
-        if item:
-            key = item.data(Qt.UserRole)
-            if key in self.column_mapping:
-                del self.column_mapping[key]
+        if item is None:
+            return
+        col_name = item.data(Qt.UserRole)
+        if col_name is None or col_name not in self.dataframe.columns:
+            return
+        reply = QMessageBox.question(
+            self, "Подтверждение",
+            f"Удалить колонку '{col_name}' и тег?",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply == QMessageBox.No:
+            self.display_tags()
+            return
+        self.dataframe.drop(columns=[col_name], inplace=True)
+        if col_name in self.column_mapping:
+            del self.column_mapping[col_name]
+        self.display_dataframe(self.dataframe)
+        self.display_tags()
 
     def accept_selection(self):
         self.close()
