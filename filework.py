@@ -335,7 +335,9 @@ class FillWindowFile(QMainWindow):
         super().__init__(parent)
         self.file_path = file_path
         self.template_path = template_path
-        self.setWindowTitle(f"Просмотр данных: {file_path.name}")
+        self.dataframe = None
+        self.column_mapping = {}  # исходное имя колонки -> новое имя (пользовательское)
+        self.setWindowTitle(f"Выбор данных из: {file_path.name}")
         self.resize(1000, 700)
         self.setup_ui()
         self.load_file()
@@ -346,16 +348,48 @@ class FillWindowFile(QMainWindow):
         layout = QVBoxLayout(central)
 
         btn_layout = QHBoxLayout()
-        self.save_as_btn = QPushButton("Сохранить как")
-        btn_layout.addWidget(self.save_as_btn)
+        self.accept_btn = QPushButton("Принять")
+        self.add_index_btn = QPushButton("Добавить нумерацию")
+        btn_layout.addWidget(self.accept_btn)
+        btn_layout.addWidget(self.add_index_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
+        splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(splitter)
+
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.addWidget(QLabel("Данные:"))
         self.stacked_widget = QWidget()
         self.stacked_layout = QVBoxLayout(self.stacked_widget)
-        layout.addWidget(self.stacked_widget)
+        left_layout.addWidget(self.stacked_widget)
+        splitter.addWidget(left_widget)
 
-        self.save_as_btn.clicked.connect(self.save_as)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.addWidget(QLabel("Теги (колонки):"))
+        self.tags_list = QListWidget()
+        self.tags_list.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
+        )
+        self.tags_list.itemChanged.connect(self.on_tag_renamed)
+        right_layout.addWidget(self.tags_list)
+
+        tag_btn_layout = QHBoxLayout()
+        self.add_tag_btn = QPushButton("Добавить тег")
+        self.remove_tag_btn = QPushButton("Удалить тег")
+        tag_btn_layout.addWidget(self.add_tag_btn)
+        tag_btn_layout.addWidget(self.remove_tag_btn)
+        right_layout.addLayout(tag_btn_layout)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([700, 300])
+
+        self.accept_btn.clicked.connect(self.accept_selection)
+        self.add_tag_btn.clicked.connect(self.add_tag)
+        self.remove_tag_btn.clicked.connect(self.remove_tag)
+        self.add_index_btn.clicked.connect(self.add_index_column)
 
     def clear_stacked(self):
         while self.stacked_layout.count():
@@ -374,33 +408,24 @@ class FillWindowFile(QMainWindow):
 
     def load_excel(self):
         try:
-            self.dataframe = pandas.read_excel(self.file_path,
-                                               engine='openpyxl' if self.file_path.suffix == '.xlsx' else 'xlrd')
-            self.display_dataframe()
+            self.dataframe = pandas.read_excel(
+                self.file_path,
+                engine='openpyxl' if self.file_path.suffix == '.xlsx' else 'xlrd'
+            )
+            self.column_mapping = {col: col for col in self.dataframe.columns}
+            self.display_dataframe(self.dataframe)
+            self.display_tags()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить Excel:\n{e}")
 
     def load_csv(self):
         try:
             self.dataframe = pandas.read_csv(self.file_path)
-            self.display_dataframe()
+            self.column_mapping = {col: col for col in self.dataframe.columns}
+            self.display_dataframe(self.dataframe)
+            self.display_tags()
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить CSV:\n{e}")
-
-    def display_dataframe(self):
-        table = QTableWidget()
-        table.setRowCount(self.dataframe.shape[0])
-        table.setColumnCount(self.dataframe.shape[1])
-        table.setHorizontalHeaderLabels(self.dataframe.columns.astype(str))
-        for i in range(self.dataframe.shape[0]):
-            for j in range(self.dataframe.shape[1]):
-                value = self.dataframe.iat[i, j]
-                item = QTableWidgetItem(str(value) if not pandas.isna(value) else "")
-                table.setItem(i, j, item)
-        table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
-        self.clear_stacked()
-        self.stacked_layout.addWidget(table)
-        self.table_widget = table
 
     def load_text(self):
         try:
@@ -418,9 +443,106 @@ class FillWindowFile(QMainWindow):
         self.clear_stacked()
         self.stacked_layout.addWidget(text_edit)
         self.text_edit = text_edit
+        self.column_mapping = {}
+        self.tags_list.clear()
+        self.tags_list.addItem("(текстовый файл, теги не определены)")
 
-    def save_as(self):
-        QMessageBox.information(self, "Информация", "Сохранение данных пока не реализовано")
+    def display_dataframe(self, df):
+        table = QTableWidget()
+        table.setRowCount(df.shape[0])
+        table.setColumnCount(df.shape[1])
+        table.setHorizontalHeaderLabels(df.columns.astype(str))
+        for i in range(df.shape[0]):
+            for j in range(df.shape[1]):
+                value = df.iat[i, j]
+                item = QTableWidgetItem(str(value) if not pandas.isna(value) else "")
+                table.setItem(i, j, item)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.clear_stacked()
+        self.stacked_layout.addWidget(table)
+        self.table_widget = table
+
+    def display_tags(self):
+        self.tags_list.clear()
+        if self.dataframe is not None:
+            for col in self.dataframe.columns:
+                display_name = self.column_mapping.get(col, col)
+                item = QListWidgetItem(display_name)
+                item.setData(Qt.UserRole, col)
+                self.tags_list.addItem(item)
+        else:
+            self.tags_list.addItem("(нет данных)")
+
+    def add_index_column(self):
+        if self.dataframe is None:
+            QMessageBox.warning(self, "Ошибка", "Нет загруженных данных.")
+            return
+        base_name = "Нумерация"
+        index_col_name = base_name
+        counter = 1
+        while index_col_name in self.dataframe.columns:
+            index_col_name = f"{base_name}_{counter}"
+            counter += 1
+        self.dataframe[index_col_name] = range(1, len(self.dataframe) + 1)
+        self.column_mapping[index_col_name] = index_col_name
+        self.display_dataframe(self.dataframe)
+        self.display_tags()
+
+    def on_tag_renamed(self, item):
+        new_name = item.text().strip()
+        if not new_name:
+            old_display = self.column_mapping.get(item.data(Qt.UserRole), "")
+            item.setText(old_display)
+            return
+        original_col = item.data(Qt.UserRole)
+        if original_col is not None and original_col in self.dataframe.columns:
+            if original_col != new_name:
+                if new_name in self.dataframe.columns:
+                    QMessageBox.warning(self, "Ошибка", f"Колонка с именем '{new_name}' уже существует.")
+                    item.setText(self.column_mapping.get(original_col, original_col))
+                    return
+                self.dataframe.rename(columns={original_col: new_name}, inplace=True)
+                self.column_mapping[new_name] = self.column_mapping.pop(original_col)
+                item.setData(Qt.UserRole, new_name)
+                self.display_dataframe(self.dataframe)
+                self.display_tags()
+
+    def add_tag(self):
+        if self.dataframe is None:
+            QMessageBox.warning(self, "Ошибка", "Нет загруженных данных.")
+            return
+        base_name = "Новая колонка"
+        new_col_name = base_name
+        counter = 1
+        while new_col_name in self.dataframe.columns:
+            new_col_name = f"{base_name}_{counter}"
+            counter += 1
+        self.dataframe[new_col_name] = pandas.NA
+        self.column_mapping[new_col_name] = new_col_name
+        self.display_dataframe(self.dataframe)
+        self.display_tags()
+        for i in range(self.tags_list.count()):
+            item = self.tags_list.item(i)
+            if item.data(Qt.UserRole) == new_col_name:
+                self.tags_list.setCurrentItem(item)
+                self.tags_list.editItem(item)
+                break
+
+    def remove_tag(self):
+        current_row = self.tags_list.currentRow()
+        if current_row < 0:
+            QMessageBox.information(self, "Информация", "Выберите тег для удаления.")
+            return
+        item = self.tags_list.takeItem(current_row)
+        if item:
+            key = item.data(Qt.UserRole)
+            if key in self.column_mapping:
+                del self.column_mapping[key]
+
+    def accept_selection(self):
+        self.close()
+        template_win = FillWindowTemplate(self.template_path)
+        template_win.show()
 
 def main():
     app = QApplication(sys.argv)
