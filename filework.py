@@ -150,9 +150,11 @@ class DragnDrop(QObject):
             self.window.statusbar.showMessage(f"Шаблон скопирован в {self.templates_folder}", 2000)
 
 class FillWindowTemplate(QMainWindow):
-    def __init__(self, path, parent=None):
+    def __init__(self, path, dataframe=None, column_mapping=None, parent=None):
         super().__init__(parent)
         self.path = path
+        self.dataframe = dataframe
+        self.column_mapping = column_mapping or {}
         self.markers = []
         self.variant_widgets = []
         self.generated_text = ""
@@ -167,10 +169,10 @@ class FillWindowTemplate(QMainWindow):
         layout = QVBoxLayout(central)
 
         btn_layout = QHBoxLayout()
+        self.example_btn = QPushButton("Пример")
         self.generate_btn = QPushButton("Сгенерировать")
-        self.save_btn = QPushButton("Сохранить как")
+        btn_layout.addWidget(self.example_btn)
         btn_layout.addWidget(self.generate_btn)
-        btn_layout.addWidget(self.save_btn)
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -183,15 +185,15 @@ class FillWindowTemplate(QMainWindow):
 
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.addWidget(QLabel("Маркеры и варианты:"))
+        right_layout.addWidget(QLabel("Маркеры и соответствующие колонки:"))
         self.markers_list = QListWidget()
         right_layout.addWidget(self.markers_list)
         splitter.addWidget(right_widget)
 
         splitter.setSizes([600, 300])
 
-        self.generate_btn.clicked.connect(self.generate_filled_document)
-        self.save_btn.clicked.connect(self.save_as)
+        self.example_btn.clicked.connect(self.show_example)
+        self.generate_btn.clicked.connect(self.generate_all)
 
     def load_template(self):
         suffix = self.path.suffix.lower()
@@ -206,19 +208,13 @@ class FillWindowTemplate(QMainWindow):
 
     def load_docx(self):
         doc = Document(self.path)
-        full_text = []
-        for para in doc.paragraphs:
-            full_text.append(para.text)
+        full_text = [para.text for para in doc.paragraphs]
         self.raw_text = "\n".join(full_text)
         self.find_markers_in_text(self.raw_text)
 
     def load_pdf(self):
         with pdfplumber.open(self.path) as pdf:
-            full_text = []
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    full_text.append(text)
+            full_text = [page.extract_text() or "" for page in pdf.pages]
         self.raw_text = "\n".join(full_text)
         self.find_markers_in_text(self.raw_text)
 
@@ -233,7 +229,7 @@ class FillWindowTemplate(QMainWindow):
     def find_markers_in_text(self, text):
         underscore_pattern = r'_{2,}'
         index_pattern = r'<\d+>'
-
+        colon_pattern = r'([A-Za-zА-Яа-я0-9_$]+)\s*:'
         markers = []
         for match in re.finditer(underscore_pattern, text):
             start, end = match.span()
@@ -243,8 +239,7 @@ class FillWindowTemplate(QMainWindow):
                 'start': start,
                 'end': end,
                 'text': match.group(),
-                'word': word,
-                'variants': self.generate_variants(word)  
+                'word': word
             })
         for match in re.finditer(index_pattern, text):
             start, end = match.span()
@@ -254,23 +249,41 @@ class FillWindowTemplate(QMainWindow):
                 'start': start,
                 'end': end,
                 'text': match.group(),
-                'word': word,
-                'variants': self.generate_variants(word)
+                'word': word
+            })
+        existing_starts = {m['start'] for m in markers}
+        existing_ends = {m['end'] for m in markers}
+        for match in re.finditer(colon_pattern, text):
+            start, end = match.span()
+            word = match.group(1)
+            overlapped = False
+            for s, e in zip(existing_starts, existing_ends):
+                if not (end <= s or start >= e):
+                    overlapped = True
+                    break
+            if overlapped:
+                continue
+            markers.append({
+                'type': 'colon',
+                'start': start,
+                'end': end,
+                'text': match.group(0),
+                'word': word
             })
         markers.sort(key=lambda x: x['start'])
         self.markers = markers
 
-    def find_word(self, text, pos) :
-        start = pos - 1
-        while start >= 0 and (text[start].isalnum() or text[start] == '_'):
-            start -= 1
-        start += 1
-        return text[start:pos]
-
-    def generate_variants(self, word):
-        if not word:
-            return ["[пусто]", "[введите значение]"]
-        return [word, f"новый_{word}", f"вариант_{word}", ""]
+    def find_word(self, text, pos):
+        i = pos - 1
+        while i >= 0 and (text[i].isspace() or text[i] in '.,:;!?()[]{}-'):
+            i -= 1
+        end = i
+        while i >= 0 and (text[i].isalnum() or text[i] == '_' or text[i] == '$'):
+            i -= 1
+        start = i + 1
+        if start <= end:
+            return text[start:end+1]
+        return ""
 
     def display_text_with_markers(self):
         self.text_edit.setPlainText(self.raw_text)
@@ -278,15 +291,21 @@ class FillWindowTemplate(QMainWindow):
     def populate_variants_panel(self):
         self.markers_list.clear()
         self.variant_widgets.clear()
-        for idx, marker in enumerate(self.markers):
+        if self.dataframe is not None:
+            columns = list(self.column_mapping.values())
+        else:
+            columns = []
+        for marker in self.markers:
             widget = QWidget()
             layout = QHBoxLayout(widget)
-            label = QLabel(f"{marker['type']}: '{marker['text']}' (перед: {marker['word']})")
+            label = QLabel(marker['word'])
             combo = QComboBox()
-            combo.addItems(marker['variants'])
-            for i in range(combo.count()):
-                if combo.itemText(i) == "":
-                    combo.setItemText(i, "(пусто)")
+            if columns:
+                combo.addItems(columns)
+                combo.setCurrentIndex(0)
+            else:
+                variants = [marker['word'], f"новый_{marker['word']}", "вариант", ""]
+                combo.addItems(variants)
             layout.addWidget(label)
             layout.addWidget(combo)
             item = QListWidgetItem(self.markers_list)
@@ -295,40 +314,93 @@ class FillWindowTemplate(QMainWindow):
             self.markers_list.setItemWidget(item, widget)
             self.variant_widgets.append(combo)
 
-    def generate_filled_document(self):
+    def _get_selected_columns(self):
+        selected_display = [cb.currentText() for cb in self.variant_widgets]
+        real_cols = []
+        for display in selected_display:
+            real = None
+            for key, val in self.column_mapping.items():
+                if val == display:
+                    real = key
+                    break
+            real_cols.append(real)
+        return real_cols
+
+    def generate_filled_document(self, row_index=0, save_all=False):
         if not self.markers:
             QMessageBox.information(self, "Информация", "Маркеры не найдены")
-            return
-        selected_values = [cb.currentText() for cb in self.variant_widgets]
-        new_text = self.raw_text
-        for idx, marker in enumerate(reversed(self.markers)):
-            value = selected_values[len(self.markers) - 1 - idx]
-            if value == "(пусто)":
-                value = ""
-            new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
-        self.generated_text = new_text
-        result_window = QTextEdit()
-        result_window.setWindowTitle("Результат заполнения")
-        result_window.setPlainText(new_text)
-        result_window.resize(800, 600)
-        result_window.show()
+            return None
+        if self.dataframe is None or len(self.dataframe) == 0:
+            QMessageBox.warning(self, "Ошибка", "Нет данных для заполнения")
+            return None
+        real_cols = self._get_selected_columns()
+        if not save_all:
+            if row_index >= len(self.dataframe):
+                row_index = 0
+            row = self.dataframe.iloc[row_index]
+            new_text = self.raw_text
+            for idx, marker in enumerate(reversed(self.markers)):
+                col = real_cols[len(self.markers) - 1 - idx]
+                value = str(row[col]) if col is not None and col in row and not pandas.isna(row[col]) else ""
+                if marker['type'] == 'colon':
+                    replacement = f"{marker['word']}: {value}"
+                    new_text = new_text[:marker['start']] + replacement + new_text[marker['end']:]
+                else:
+                    new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
+            self.generated_text = new_text
+            return new_text
+        else:
+            results = []
+            for idx in range(len(self.dataframe)):
+                row = self.dataframe.iloc[idx]
+                new_text = self.raw_text
+                for i, marker in enumerate(reversed(self.markers)):
+                    col = real_cols[len(self.markers) - 1 - i]
+                    value = str(row[col]) if col is not None and col in row and not pandas.isna(row[col]) else ""
+                    if marker['type'] == 'colon':
+                        replacement = f"{marker['word']}: {value}"
+                        new_text = new_text[:marker['start']] + replacement + new_text[marker['end']:]
+                    else:
+                        new_text = new_text[:marker['start']] + value + new_text[marker['end']:]
+                results.append(new_text)
+            return results
 
-    def save_as(self):
-        if not self.generated_text:
-            QMessageBox.warning(self, "Предупреждение", "Сначала сгенерируйте документ!")
+    def show_example(self):
+        if self.dataframe is None or len(self.dataframe) == 0:
+            QMessageBox.warning(self, "Ошибка", "Нет данных для примера")
             return
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Сохранить результат как...",
-            str(self.path.parent / f"{self.path.stem}_filled{self.path.suffix}"),
-            "Текстовые файлы (*.txt);;Все файлы (*.*)"
-        )
-        if file_path:
-            try:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(self.generated_text)
-                QMessageBox.information(self, "Сохранено", f"Результат сохранён в {file_path}")
-            except Exception as e:
-                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить: {e}")
+        filled = self.generate_filled_document(row_index=0, save_all=False)
+        if filled is not None:
+            self.text_edit.setPlainText(filled)
+
+    def generate_all(self):
+        if self.dataframe is None or len(self.dataframe) == 0:
+            QMessageBox.warning(self, "Ошибка", "Нет данных для генерации")
+            return
+
+        from PySide6.QtWidgets import QProgressDialog
+        folder = QFileDialog.getExistingDirectory(self, "Выберите папку для сохранения")
+        if not folder:
+            return
+        folder_path = Path(folder) / self.path.stem
+        folder_path.mkdir(exist_ok=True)
+
+        results = self.generate_filled_document(save_all=True)
+        if not results:
+            return
+
+        progress = QProgressDialog("Генерация файлов...", "Отмена", 0, len(results), self)
+        progress.setWindowModality(Qt.WindowModal)
+        for i, text in enumerate(results):
+            if progress.wasCanceled():
+                break
+            progress.setValue(i)
+            filename = f"{self.path.stem}_{i + 1}.txt"
+            filepath = folder_path / filename
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(text)
+        progress.setValue(len(results))
+        QMessageBox.information(self, "Готово", f"Создано {len(results)} файлов в {folder_path}")
 
 class FillWindowFile(QMainWindow):
     def __init__(self, file_path, template_path, parent=None):
@@ -336,10 +408,13 @@ class FillWindowFile(QMainWindow):
         self.file_path = file_path
         self.template_path = template_path
         self.dataframe = None
-        self.column_mapping = {}  # исходное имя колонки -> новое имя (пользовательское)
+        self.column_mapping = {}
         self.setWindowTitle(f"Выбор данных из: {file_path.name}")
         self.table_widget = None
         self._updating = False
+        self._accepting = False
+        self.template_win = None
+        self.empty_viewer = None
         self.resize(1000, 700)
         self.setup_ui()
         self.load_file()
@@ -453,6 +528,7 @@ class FillWindowFile(QMainWindow):
         self.tags_list.addItem("(текстовый файл, теги не определены)")
 
     def display_dataframe(self, df):
+        self._updating = True
         table = QTableWidget()
         table.setRowCount(df.shape[0])
         table.setColumnCount(df.shape[1])
@@ -472,7 +548,7 @@ class FillWindowFile(QMainWindow):
         self.table_widget = table
         self.clear_stacked()
         self.stacked_layout.addWidget(table)
-        self.table_widget = table
+        self._updating = False
 
     def add_row(self):
         if self.table_widget is None:
@@ -498,6 +574,7 @@ class FillWindowFile(QMainWindow):
         if self.table_widget is None:
             return
         self.table_widget.setUpdatesEnabled(False)
+        self._updating = True
         for i, row_parts in enumerate(rows_data):
             target_row = start_row + i
             while target_row >= self.table_widget.rowCount():
@@ -513,6 +590,7 @@ class FillWindowFile(QMainWindow):
                 item.setText(cell_text)
         self.update_dataframe_from_table()
         self.table_widget.setUpdatesEnabled(True)
+        self._updating = False
 
     def paste_from_clipboard(self):
         clipboard = QApplication.clipboard()
@@ -603,7 +681,6 @@ class FillWindowFile(QMainWindow):
                 self.tags_list.addItem(item)
         else:
             self.tags_list.addItem("(нет данных)")
-        self.display_dataframe(self.dataframe)
 
     def add_index_column(self):
         if self.dataframe is None:
@@ -689,9 +766,85 @@ class FillWindowFile(QMainWindow):
         self.display_tags()
 
     def accept_selection(self):
+        result = self._show_empty_rows_dialog(
+            title="Предупреждение",
+            question="В таблице есть пустые значения. Продолжить с ними?",
+            continue_label="Продолжить"
+        )
+        if result == 'cancel' or result == 'show':
+            return
+        self._accepting = True
+        self.template_win = FillWindowTemplate(
+            self.template_path,
+            dataframe=self.dataframe,
+            column_mapping=self.column_mapping
+        )
+        self.template_win.show()
         self.close()
-        template_win = FillWindowTemplate(self.template_path)
-        template_win.show()
+
+    def _show_empty_rows_dialog(self, title, question, continue_label):
+        empty_rows = self.get_empty_rows()
+        if not empty_rows:
+            return 'continue'
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(title)
+        msg_box.setText(
+            f"{question}\n\n"
+            f"Найдено {len(empty_rows)} строк с пустыми значениями."
+        )
+        continue_btn = msg_box.addButton(continue_label, QMessageBox.AcceptRole)
+        show_btn = msg_box.addButton("Показать строки", QMessageBox.ActionRole)
+        cancel_btn = msg_box.addButton("Отмена", QMessageBox.RejectRole)
+        msg_box.setDefaultButton(cancel_btn)
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        if clicked == cancel_btn:
+            return 'cancel'
+        if clicked == show_btn:
+            self.show_empty_rows(empty_rows)
+            return 'show'
+        return 'continue'
+
+    def get_empty_rows(self):
+        empty_rows = []
+        if self.dataframe is None:
+            return empty_rows
+        for i in range(len(self.dataframe)):
+            row = self.dataframe.iloc[i]
+            if row.isna().any() or (row == "").any():
+                empty_rows.append(i)
+        return empty_rows
+
+    def show_empty_rows(self, empty_indices):
+        if not empty_indices:
+            return
+        text = f"Строки с пустыми значениями (всего {len(empty_indices)}):\n\n"
+        for idx in empty_indices:
+            row_data = self.dataframe.iloc[idx].to_dict()
+            row_str = f"Строка {idx + 1}: " + ", ".join(f"{k}={v}" for k, v in row_data.items())
+            text += row_str + "\n"
+        viewer = QTextEdit()
+        viewer.setWindowTitle("Строки с пустыми значениями")
+        viewer.setPlainText(text)
+        viewer.resize(600, 400)
+        viewer.show()
+
+    def closeEvent(self, event):
+        if self._accepting:
+            event.accept()
+            return
+        result = self._show_empty_rows_dialog(
+            title="Предупреждение",
+            question="Закрыть окно с пустыми значениями?",
+            continue_label="Закрыть"
+        )
+        if result == 'cancel':
+            event.ignore()
+            return
+        if result == 'show':
+            event.ignore()
+            return
+        event.accept()
 
 def main():
     app = QApplication(sys.argv)
@@ -708,6 +861,7 @@ def main():
         if dragdrop.current_file_path is None:
             QMessageBox.warning(window, "Предупреждение", "Сначала загрузите файл данных!")
             return
+        window.hide()
         window.fill_file_window = FillWindowFile(
             dragdrop.current_file_path,
             dragdrop.current_template_path
